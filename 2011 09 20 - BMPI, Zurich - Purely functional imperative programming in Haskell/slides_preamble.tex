@@ -1,0 +1,30 @@
+\usepackage{listings}
+\usepackage{color}
+
+\def\UrlFont{\tt\small\color{green!40!black}}
+
+\lstdefinelanguage{Haskell_mod}{
+    otherkeywords={.., ::, |, <-, ->, @, ~, -, >, = },
+    morekeywords={
+       case, class, data, default, deriving, do, else,
+       foreign, if, import, in, infix, infixl, infixr,
+       instance, let, module, newtype, of, then, type,
+       where, _, forall, ccall },
+    sensitive,
+    morecomment=[l]--,
+    morecomment=[n]{\{-}{-\}},
+    morestring=[b]"
+}[keywords,comments,strings]
+
+\lstset{
+    language=Haskell_mod,
+    basicstyle=\small\ttfamily\color[rgb]{0.10,0.10,0.15},
+    keywordstyle=\color{red!65!black},
+    commentstyle=\color[rgb]{0.133,0.545,0.133},
+    stringstyle=\color[rgb]{0.627,0.126,0.941},
+    showstringspaces=false,
+    frame=none
+}
+
+\renewcommand{\textbf}[1]{{\color{red!95!black}#1}}
+\renewcommand{\emph}[1]{{\color{blue!90!black}#1}}
