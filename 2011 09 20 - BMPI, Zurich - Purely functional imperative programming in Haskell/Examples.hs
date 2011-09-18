@@ -1,14 +1,29 @@
+-- Examples for talk about purely functional imperative programming in Haskell
+--
+-- Author: Simon Meier <iridcode@gmail.com>
+-- Date:   2011/09/18
 
+
+-- Let's import some stuff for our later examples :-)
+
+-- natural logarithm and our logging operation clash
 import Prelude hiding (log)
 
+-- The standard Map datastructure.
 import Data.Map (Map, findWithDefault, insert, fromList)
+
+-- Support for effectful computations
 import Control.Applicative
-import Control.Monad (guard)
+import Control.Monad (liftM2)
 import Data.Foldable (asum)
 
+-- Monadic parsing combinators from standard library
 import Text.Parsec hiding (State, (<|>))
 
--- Intro: Haskell Syntax
+
+-----------------------------------------------------------------------------
+-- Arithmetic Expressions
+-----------------------------------------------------------------------------
 
 data Op = Plus | Minus | Times | Divide
           deriving( Eq, Ord, Show)
@@ -32,35 +47,9 @@ test :: Expr
 test = Bin Minus (Lit 8) (Bin Times (Lit 2) (Lit 5))
                  
 
--- values with logs
-
-data ExprL = 
-       LitL Integer
-     | BinL Op ExprL ExprL
-     | LoggedL String ExprL
-     deriving( Eq, Ord, Show)
-
-data Logged a = Logged (a, [String])
-  deriving( Eq, Ord, Show )
-
-evalL :: ExprL -> Logged Integer
-evalL (LitL i)        = Logged (i, [])
-evalL (BinL op e1 e2) = Logged (evalOp op x1 x2, log1 ++ log2)
-  where
-    Logged (x1, log1) = evalL e1
-    Logged (x2, log2) = evalL e2
-evalL (LoggedL msg e)    = 
-    Logged (x, (msg ++ ": " ++ show x) : log1)
-  where
-    Logged (x, log1) = evalL e
-    
-
-testL :: ExprL
-testL = BinL Minus (LoggedL "hello" (BinL Times (LitL 2) (LitL 5))) 
-                   (LoggedL "world" (LitL 8))
-  
-
--- partial values
+-----------------------------------------------------------------------------
+-- Using 'Error a' to handle division by zero
+-----------------------------------------------------------------------------
 
 data Error a = Exception String
              | Result a
@@ -79,20 +68,20 @@ evalE (Bin op e1 e2) =
         Exception msg -> Exception msg
         Result x2  -> evalOpE op x1 x2
 
-testP1, testP2 :: Expr
-testP1 = Bin Divide (Lit 10) (Lit 2)
-testP2 = Bin Divide (Lit 10) (Lit 0)
 
--- Monads
+testE1, testE2 :: Expr
+testE1 = Bin Divide (Lit 10) (Lit 2)
+testE2 = Bin Divide (Lit 10) (Lit 0)
 
--- Error Monad
+
+-- The 'Error' Monad
+--------------------
 
 instance Monad Error where
   return x = Result x
 
   Exception e >>= _ = Exception e
   Result x    >>= f = f x
-
 
 throw :: String -> Error a
 throw exc = Exception exc
@@ -101,8 +90,7 @@ catch :: Error a -> (String -> Error a) -> Error a
 catch (Exception exc) handler = handler exc
 catch (Result x)      _       = Result x
 
--- Error Monad example
-
+-- The same code as above, this time written using do-notation
 evalOpE' :: Op -> (Integer -> Integer -> Error Integer)
 evalOpE' Divide _ 0 = throw "division by 0"
 evalOpE' op     x y = return (evalOp op x y)
@@ -112,44 +100,11 @@ evalE' (Lit i)        = return i
 evalE' (Bin op e1 e2) = do x1 <- evalE' e1
                            x2 <- evalE' e2
                            evalOpE' op x1 x2
--- evalP' (Bin op e1 e2) =  evalP' e1 >>= (\x1 ->
---                           evalP' e2 >>= (\x2 ->
---                            evalOpP op x1 x2
---                          ))
 
 
-liftM2 :: Monad m => (a -> b -> c) -> m a -> m b -> m c
-liftM2 f ma mb = do a <- ma
-                    b <- mb
-                    return (f a b)
-
-instance Monad Logged where
-  return x = Logged (x, [])
-
-  Logged (a, log1) >>= f = 
-      Logged (b, log1 ++ log2)
-    where
-      Logged (b, log2) = f a
-
-
--- The 'Logged' monad
-
-log :: String -> Logged ()
-log msg = Logged ((), [msg])
-
-runLogged :: Logged a -> (a, [String])
-runLogged (Logged valueAndLog) = valueAndLog
-
-evalL' :: ExprL -> Logged Integer
-evalL' (LitL i)        = return i
-evalL' (BinL op e1 e2) = do x1 <- evalL' e1
-                            x2 <- evalL' e2
-                            return (evalOp op x1 x2)
-evalL' (LoggedL msg e) = do x <- evalL' e
-                            log (msg ++ ": " ++ show x)
-                            return x
-
--- The 'State' monad
+------------------------------------------------------------------------------
+-- The 'State' Monad
+------------------------------------------------------------------------------
 
 data State s a = State (s -> (a, s))
 
@@ -172,7 +127,9 @@ instance Monad (State s) where
           where
             (x, s1) = runState m s0
 
--- State Monad example
+
+-- State Monad example: C++ style variable modifiers
+----------------------------------------------------
 
 data Modifier = AsIs | PreInc | PostInc
      deriving( Eq, Ord, Show )
@@ -204,24 +161,10 @@ testV = BinV Times (VarV PreInc "x") (VarV PostInc "x")
 runTestV :: (Integer, Env)
 runTestV = runState (evalV testV) (fromList [("x",0)])
 
--- Further Examples of Monads:
 
--- logging
-
-data Parser a = Parser (String -> [(a, String)])
-
-
-type Nondeterministic a = [a]
-
-asProduct :: Integer -> Nondeterministic (Integer, Integer)
-asProduct n = do
-  x1 <- [1..n]
-  x2 <- [1..n]
-  guard (x1 * x2 == n)
-  return (x1, x2)
-
-
--- Parsec
+------------------------------------------------------------------------------
+-- The 'Parsec' monad for parsing
+------------------------------------------------------------------------------
 
 type Parse a = Parsec String () a
 
@@ -235,6 +178,11 @@ factor = binOp [('*', Times), ('-', Divide)] lit factor
 expr :: Parse Expr
 expr = binOp [('+', Plus), ('-', Minus)] factor expr
 
+-- We abstract over the pattern for left-recursive parsing,
+-- as we use it twice to parse operators according to their precedence.
+--
+-- We make use of <$>, <*>, and *> from Control.Applicative
+-- to shorten the code.
 binOp :: [(Char, Op)] -> Parse Expr -> Parse Expr -> Parse Expr
 binOp ops leftOperand rightOperand = do
   x1 <- leftOperand
@@ -249,72 +197,82 @@ parseWith p inp = parse p "<dummy-source-file>" inp
 testParse :: Either ParseError Expr
 testParse = parseWith expr "1-2*(5-8)"
 
--- IO Monad
 
--- Hack to ensure sequential evaluation of real side-effecting operations
---
---   type IO a = State #World a
---
--- Exactly one function is evaluated with the actual state of the real world.
---
---   main:: IO ()
---
+------------------------------------------------------------------------------
+-- A cusomt 'Writer' monad that logs values during the execution
+------------------------------------------------------------------------------
 
--- Outlook:
+data ExprL = 
+       LitL Integer
+     | BinL Op ExprL ExprL
+     | LoggedL String ExprL
+     deriving( Eq, Ord, Show)
 
--- Monad transfomers: monads a la carte
--- Applicative funtors: weaker than Monads, often sufficient
---   - for parsers: context-free vs. context-sensitive grammars
---   the fewer choice => the fewer mistakes
---
--- More type-classes capturing computation patterns:
---   Semirings: associative operator => allows parallel evaluation
---   Monoids: Semirings with identity element
---   MonadPlus: Monad with alternative (e.g. parser)
---   Traversable: containers with fixed traversing scheme
---
--- => Typeclassopedia
+data Logged a = Logged (a, [String])
+  deriving( Eq, Ord, Show )
 
+evalL :: ExprL -> Logged Integer
+evalL (LitL i)        = Logged (i, [])
+evalL (BinL op e1 e2) = Logged (evalOp op x1 x2, log1 ++ log2)
+  where
+    Logged (x1, log1) = evalL e1
+    Logged (x2, log2) = evalL e2
+evalL (LoggedL msg e)    = 
+    Logged (x, (msg ++ ": " ++ show x) : log1)
+  where
+    Logged (x, log1) = evalL e
+    
 
--- Monad laws
---
--- Allow reasoning about (>>=) and (return) independent of implementation.
--- Ensure that (>>=) and (return) behave as expected.
-
-
--- Conclusion:
---
---  Pure functions: gold standard for compositionality
---
---  Monads allow imperative programming 
---
---  Haskell expressive enough to abstract over construction
---  such as Monads, Applicative Functors, ...
-
-
-
-
--- Side note: Defining your own operators
-
-infixl 6 .+
-infixl 6 .-
-infixl 7 .*
-infixl 7 ./
-
-(.+), (.-), (.*), (./) :: Expr -> Expr -> Expr
-(.+) = Bin Plus
-(.-) = Bin Minus
-(.*) = Bin Times
-(./) = Bin Divide
-
-test' :: Expr
-test' = (Lit 2) .* (Lit 5) .- (Lit 8)
+testL :: ExprL
+testL = BinL Minus (LoggedL "hello" (BinL Times (LitL 2) (LitL 5))) 
+                   (LoggedL "world" (LitL 8))
+  
+-- The 'Logged' Functor, Applicative, and Monad instances
+---------------------------------------------------------
 
 instance Functor Logged where
   fmap f (Logged (x, log1)) = Logged (f x, log1)
 
 instance Applicative Logged where
-  pure = return
-  Logged (f, log1) <*> Logged (x, log2) = 
-      Logged (f x, log1 ++ log2)
+  -- pure and return are synonymous; a historical artifact
+  pure x = Logged (x, [])
 
+  Logged (f, log1) <*> Logged (x, log2) = Logged (f x, log1 ++ log2)
+
+
+instance Monad Logged where
+  return x = Logged (x, [])
+
+  Logged (a, log1) >>= f = 
+      Logged (b, log1 ++ log2)
+    where
+      Logged (b, log2) = f a
+
+
+log :: String -> Logged ()
+log msg = Logged ((), [msg])
+
+runLogged :: Logged a -> (a, [String])
+runLogged (Logged valueAndLog) = valueAndLog
+
+-- compare this implementation to 'evalL' above: the plumbing is gone
+evalL' :: ExprL -> Logged Integer
+evalL' (LitL i)        = return i
+evalL' (BinL op e1 e2) = evalOp op <$> evalL' e1 <*> evalL' e2
+evalL' (LoggedL msg e) = do x <- evalL' e
+                            log (msg ++ ": " ++ show x)
+                            return x
+
+
+------------------------------------------------------------------------------
+-- The 'IO' monad
+------------------------------------------------------------------------------
+
+-- Hack to ensure sequential evaluation of real side-effecting operations
+--
+--   type IO a = State #World a
+--
+-- Exactly one function is executed with the actual state of the real world.
+--
+--   main:: IO ()
+--

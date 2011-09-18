@@ -1,6 +1,6 @@
 % Purely functional imperative programming in\ Haskell
 % Simon Meier
-% September 20, 2011
+% BMPI, Zurich\linebreak September 20, 2011
 
 
 # Outline
@@ -30,13 +30,13 @@ Pure functions are *context-independent* and *side-effect-free*.
 
 # How do you write pure functions?
 
-**Pure functions cannot use global/shared mutable state!**
+*Pure functions cannot use global/shared mutable state!*
 
 \vspace{2em}
 
-One approach to pure functions: *purely functional programming*
+One approach to pure functions: **purely functional programming**
 
-- disallow destructive updates (copy-on-write)
+- *disallow destructive updates* (copy-on-write)
 
 - new optimization opportunities: for example, rewrite rules
   \ $\texttt{map f}\circ\texttt{map g} = \texttt{map}\;(\texttt{f} \circ \texttt{g})$
