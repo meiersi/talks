@@ -7,31 +7,58 @@
 -- Let's import some stuff for our later examples :-)
 
 -- natural logarithm and our logging operation clash
-import Prelude hiding (log)
+import Prelude hiding (log, lookup)
 
 -- The standard Map datastructure.
-import Data.Map (Map, findWithDefault, insert, fromList)
+import Data.Map (Map, findWithDefault, lookup, insert, fromList)
 
 -- Support for effectful computations
 import Control.Applicative
 import Control.Monad (liftM2)
 import Data.Foldable (asum)
+import           Control.Monad.State           (StateT(..), runStateT) 
+import qualified Control.Monad.State as StateT (get, put)
+import Control.Monad.Trans                     (lift)
 
 -- Monadic parsing combinators from standard library
 import Text.Parsec hiding (State, (<|>))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 -----------------------------------------------------------------------------
 -- Arithmetic Expressions
 -----------------------------------------------------------------------------
 
-data Op = Plus | Minus | Times | Divide
-          deriving( Eq, Ord, Show)
+data Op   = Plus | Minus | Times | Divide
+          deriving( Eq, Ord, Show )
 
-data Expr = 
-       Lit Integer
-     | Bin Op Expr Expr
-     deriving( Eq, Ord, Show)
+data Expr = Lit Integer
+          | Bin Op Expr Expr
+          deriving( Eq, Ord, Show )
+
+-- 8 - 2 * 5
+expr1 :: Expr
+expr1 = Bin Minus (Lit 8) (Bin Times (Lit 2) (Lit 5))
 
 evalOp :: Op -> (Integer -> Integer -> Integer)
 evalOp Plus   = (+)
@@ -43,9 +70,27 @@ eval :: Expr -> Integer
 eval (Lit i)        = i
 eval (Bin op e1 e2) = (evalOp op) (eval e1) (eval e2)
 
-test :: Expr
-test = Bin Minus (Lit 8) (Bin Times (Lit 2) (Lit 5))
-                 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 -----------------------------------------------------------------------------
 -- Using 'Error a' to handle division by zero
@@ -53,9 +98,10 @@ test = Bin Minus (Lit 8) (Bin Times (Lit 2) (Lit 5))
 
 data Error a = Exception String
              | Result a
+             deriving( Eq, Ord, Show )
 
 evalOpE :: Op -> (Integer -> Integer -> Error Integer)
-evalOpE Divide _ 0 = Exception "division by 0"
+evalOpE Divide x 0 = Exception (show x ++ " / 0")
 evalOpE op     x y = Result (evalOp op x y)
 
 evalE :: Expr -> Error Integer
@@ -69,9 +115,29 @@ evalE (Bin op e1 e2) =
         Result x2  -> evalOpE op x1 x2
 
 
-testE1, testE2 :: Expr
-testE1 = Bin Divide (Lit 10) (Lit 2)
-testE2 = Bin Divide (Lit 10) (Lit 0)
+expr2, expr3 :: Expr
+expr2 = Bin Divide (Lit 10) (Lit 2)
+expr3 = Bin Divide (Lit 10) (Lit 0)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 -- The 'Error' Monad
@@ -122,10 +188,9 @@ instance Monad (State s) where
 
     m >>= f = State computeResult
       where
-        computeResult s0 =
-            runState (f x) s1
-          where
-            (x, s1) = runState m s0
+        computeResult s0 = 
+            case runState m s0 of
+               (x, s1) -> runState (f x) s1
 
 
 -- State Monad example: C++ style variable modifiers
@@ -161,10 +226,83 @@ testV = BinV Times (VarV PreInc "x") (VarV PostInc "x")
 runTestV :: (Integer, Env)
 runTestV = runState (evalV testV) (fromList [("x",0)])
 
+----------------------------------------------------
+-- Actually we should use both State and Exceptions: 
+----------------------------------------------------
+--
+-- Let's use the StateT transformer.
+--
+--
+-- Here, we decide to undo all state changes in case of an exception.
+-- We could use 'ErrorT String State' to not reset the state.
+-- (where 'ErrorT' stems from 'Control.Monad.Error')
+
+type StateE = StateT Env Error
+
+runStateE :: StateE a -> Env -> Error (a, Env)
+runStateE = runStateT
+
+-- We can see this undoing of state changes in this implementation of catchE.
+--
+-- Note that $ is a low-precedence operator for function application.
+--
+--   infixr 0 $
+--   ($) :: (a -> b) -> a -> b       -- Defined in GHC.Base
+--   f $ x = f x
+--
+-- It is used to save on parentheses.
+--
+catchE :: StateE a -> (String -> StateE a) -> StateE a
+catchE m handler = StateT $ \env ->
+    case runStateE m env of
+        -- state reset in case of exception: possible because we are not using
+        -- any destructive updates. Possibly efficient because Data.Map shares
+        -- unchanged parts of its map, which might well be the case, as most
+        -- variables are expected to be unchanged in a function call.
+        Exception msg -> runStateE (handler msg) env  
+        -- pass through the result together with the updated state unchanged
+        res           -> res
+
+-- Here the stateful evaluation with exception for divisions and 
+-- variables that are not found.
+evalVE :: ExprV -> StateE Integer
+evalVE (LitV i)          = return i
+evalVE (BinV op e1 e2)   = do
+    x1 <- evalVE e1
+    x2 <- evalVE e2
+    lift (evalOpE op x1 x2)
+evalVE (VarV modifier v) = do
+    env <- StateT.get
+    x <- liftMaybe (v ++ " not found") (lookup v env)
+    let x' = x + 1
+    case modifier of 
+        AsIs    -> return x
+        PreInc  -> do {StateT.put (insert v x' env); return x'}
+        PostInc -> do {StateT.put (insert v x' env); return x }
+
+-- | Throw an exception in case of 'Nothing'.
+--
+-- Note that: data Maybe a = Nothing | Just a
+--
+liftMaybe :: String -> Maybe a -> StateE a
+liftMaybe msg Nothing  = lift $ throw msg
+liftMaybe _   (Just x) = return x
+
+testVE :: ExprV
+testVE = BinV Divide (VarV PostInc "z") (VarV AsIs "y")
+
+runTestVE :: Error (Integer, Env)
+runTestVE = runStateE (evalVE testVE) (fromList [("x",10),("y",0)])
+
 
 ------------------------------------------------------------------------------
 -- The 'Parsec' monad for parsing
 ------------------------------------------------------------------------------
+
+-- We make use of <$>, <*>, and *> from Control.Applicative
+-- to shorten the code.
+--
+-- See http://www.haskell.org/hoogle/?hoogle=<*> for more information.
 
 type Parse a = Parsec String () a
 
@@ -180,9 +318,6 @@ expr = binOp [('+', Plus), ('-', Minus)] factor expr
 
 -- We abstract over the pattern for left-recursive parsing,
 -- as we use it twice to parse operators according to their precedence.
---
--- We make use of <$>, <*>, and *> from Control.Applicative
--- to shorten the code.
 binOp :: [(Char, Op)] -> Parse Expr -> Parse Expr -> Parse Expr
 binOp ops leftOperand rightOperand = do
   x1 <- leftOperand

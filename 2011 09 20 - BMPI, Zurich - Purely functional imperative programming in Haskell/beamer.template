@@ -1,7 +1,7 @@
 $if(legacy-header)$
 $legacy-header$
 $else$
-\documentclass{beamer}
+\documentclass[9pt]{beamer}
 % \usepackage{beamerthemeBerlin}
 \usepackage[round]{natbib}
 \usepackage{amsmath}

@@ -4,13 +4,14 @@
 \def\UrlFont{\tt\small\color{green!40!black}}
 
 \lstdefinelanguage{Haskell_mod}{
-    otherkeywords={.., ::, |, <-, ->, @, ~, -, >, = },
+    otherkeywords={.., ::, |, <-, ->, @, ~, =, \\ },
     morekeywords={
        case, class, data, default, deriving, do, else,
        foreign, if, import, in, infix, infixl, infixr,
        instance, let, module, newtype, of, then, type,
        where, _, forall, ccall },
     sensitive,
+    morecomment=[l]//,
     morecomment=[l]--,
     morecomment=[n]{\{-}{-\}},
     morestring=[b]"

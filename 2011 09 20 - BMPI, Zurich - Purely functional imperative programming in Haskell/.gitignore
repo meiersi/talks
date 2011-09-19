@@ -1,11 +1,11 @@
 presentation.tex
+presentation.pdf
 *.aux
 *.bbl
 *.blg
 *.log
 *.nav
 *.out
-*.pdf
 *.snm
 *.toc
 *.vrb
