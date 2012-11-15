@@ -1,0 +1,322 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta http-equiv="Content-Style-Type" content="text/css" />
+  <meta name="generator" content="pandoc" />
+  <meta name="author" content="Simon Meier" />
+  <title>Design and implementation of bytestring builders</title>
+  <style type="text/css">
+table.sourceCode, tr.sourceCode, td.lineNumbers, td.sourceCode {
+  margin: 0; padding: 0; vertical-align: baseline; border: none; }
+table.sourceCode { width: 100%; }
+td.lineNumbers { text-align: right; padding-right: 4px; padding-left: 4px; color: #aaaaaa; border-right: 1px solid #aaaaaa; }
+td.sourceCode { padding-left: 5px; }
+code > span.kw { color: #007020; font-weight: bold; }
+code > span.dt { color: #902000; }
+code > span.dv { color: #40a070; }
+code > span.bn { color: #40a070; }
+code > span.fl { color: #40a070; }
+code > span.ch { color: #4070a0; }
+code > span.st { color: #4070a0; }
+code > span.co { color: #60a0b0; font-style: italic; }
+code > span.ot { color: #007020; }
+code > span.al { color: #ff0000; font-weight: bold; }
+code > span.fu { color: #06287e; }
+code > span.er { color: #ff0000; font-weight: bold; }
+  </style>
+</head>
+<body>
+<div id="header">
+<h1 class="title">Design and implementation of bytestring builders</h1>
+<h2 class="author">Simon Meier</h2>
+<h3 class="date">FP Sydney meetup - November 15th, 2012</h3>
+</div>
+<div id="TOC">
+<ul>
+<li><a href="#my-background">My background</a></li>
+<li><a href="#bytestring-builders">Bytestring builders</a></li>
+<li><a href="#history-of-bytestring-builders">History of bytestring builders</a></li>
+<li><a href="#the-public-api">The public API</a></li>
+<li><a href="#internals-the-idea">Internals: the idea</a></li>
+<li><a href="#internals-the-types">Internals: the types</a></li>
+<li><a href="#monoid-instance">Monoid instance</a></li>
+<li><a href="#encoding-primitive-values">Encoding primitive values</a></li>
+<li><a href="#optimizations-enabled-by-bounded-size-encodings">Optimizations enabled by bounded-size encodings</a></li>
+<li><a href="#example-fused-utf-8-encoding-and-html-escaping-of-text-values">Example: fused UTF-8 encoding and HTML escaping of Text values</a></li>
+<li><a href="#execution-considerations">Execution: considerations</a></li>
+<li><a href="#execution-gory-details">Execution: gory details</a></li>
+<li><a href="#comparison-to-the-binary-builder">Comparison to the binary builder</a></li>
+<li><a href="#conclusions">Conclusions</a></li>
+</ul>
+</div>
+<h1 id="my-background"><a href="#TOC">My background</a></h1>
+<table>
+<tbody>
+<tr class="odd">
+<td align="left">2002 - 2007</td>
+<td align="left">Master of CS at ETH Zurich</td>
+</tr>
+<tr class="even">
+<td align="left">2007 - 2013</td>
+<td align="left">PhD studies at ETH Zurich on automated security protocol verification (tool development using Haskell)</td>
+</tr>
+<tr class="odd">
+<td align="left">2013 - ….</td>
+<td align="left">full time Haskell programmer at <a href="http://www.erudify.ch">www.erudify.ch</a> (we are looking for more Haskell programmers :-)</td>
+</tr>
+</tbody>
+</table>
+<p>Currently traveling Australia for three months to celebrate the finished thesis… yihaa! :-)</p>
+<h1 id="bytestring-builders"><a href="#TOC">Bytestring builders</a></h1>
+<ul>
+<li><p>Datastructures for the efficient representation of sequences of bytes composed from smaller sequences of bytes.</p></li>
+<li><p>Typical use case: conversion of Haskell types to sequences of bytes, i.e., encodings</p></li>
+<li><p>Efficiency concerns:</p>
+<ul>
+<li><em>O(1)</em> append</li>
+<li>efficient encoding of primitive Haskell types</li>
+<li>chunk boundaries</li>
+<li>redundant copying</li>
+<li>buffer allocation</li>
+</ul></li>
+</ul>
+<h1 id="history-of-bytestring-builders"><a href="#TOC">History of bytestring builders</a></h1>
+<table>
+<tbody>
+<tr class="odd">
+<td align="left">2000s</td>
+<td align="left">the <code>binary</code> library provides a bytestring builder</td>
+</tr>
+<tr class="even">
+<td align="left">Aug 2010</td>
+<td align="left">blaze-builder developed from <code>binary</code> builder due to requirements in blaze-html GSoC</td>
+</tr>
+<tr class="odd">
+<td align="left">Nov 2010</td>
+<td align="left">factored out and polished <code>blaze-builder</code></td>
+</tr>
+<tr class="even">
+<td align="left">Nov 2011</td>
+<td align="left">rewrote blaze-builder for integration into the bytestring library</td>
+</tr>
+<tr class="odd">
+<td align="left">Jan 2012</td>
+<td align="left">finetuned internals of new bytestring builder</td>
+</tr>
+<tr class="even">
+<td align="left">Sep 2012</td>
+<td align="left">Duncan Coutts released <code>bytestring-0.10.2.0</code> (contains <em>Nov 2011 patches</em> with some renamings)</td>
+</tr>
+</tbody>
+</table>
+<p>This talk is based on the Jan 2012 patches in the unreleased <a href="https://github.com/meiersi/bytestring-builder/commit/7cba0e86bcef6959d72b90728009bfea7ef2dd7b"><code>bytestring-builder</code> package</a>.</p>
+<h1 id="the-public-api"><a href="#TOC">The public API</a></h1>
+<ul>
+<li>encodings for primitive Haskell values, e.g., <code>charUtf8</code> and <code>wordHex</code></li>
+<li><code>Monoid</code> instance for composition</li>
+<li>execution by conversion to lazy bytestrings</li>
+</ul>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import</span> <span class="kw">qualified</span> <span class="dt">Data.ByteString.Lazy</span>               <span class="kw">as</span> <span class="dt">L</span>
+<span class="kw">import</span>           <span class="dt">Data.ByteString.Lazy.Builder</span>       (charUtf8, toLazyByteString)
+<span class="kw">import</span>           <span class="dt">Data.ByteString.Lazy.Builder.ASCII</span> (wordHex)
+<span class="kw">import</span>           <span class="dt">Data.Monoid</span>                        ((<span class="fu">&lt;&gt;</span>))
+<span class="kw">import</span>           <span class="dt">Data.Foldable</span>                      (foldMap)
+
+<span class="ot">escapeAndUtf8Encode ::</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Builder</span>
+escapeAndUtf8Encode <span class="fu">=</span> foldMap escapeChar
+  <span class="kw">where</span>
+    escapeChar <span class="ch">&#39;\\&#39;</span> <span class="fu">=</span> charUtf8 <span class="ch">&#39;\\&#39;</span> <span class="fu">&lt;&gt;</span> charUtf8 <span class="ch">&#39;\\&#39;</span>
+    escapeChar <span class="ch">&#39;\&quot;&#39;</span> <span class="fu">=</span> charUtf8 <span class="ch">&#39;\\&#39;</span> <span class="fu">&lt;&gt;</span> charUtf8 <span class="ch">&#39;\&quot;&#39;</span>
+    escapeChar c    <span class="fu">=</span> charUtf8 c
+
+<span class="ot">test ::</span> <span class="dt">L.ByteString</span>
+test <span class="fu">=</span> toLazyByteString <span class="fu">$</span> escapeAndUtf8Encode <span class="st">&quot;λ-wörld &quot;</span> <span class="fu">&lt;&gt;</span> wordHex <span class="dv">4919</span>
+
+<span class="co">-- test == Chunk &quot;\206\187-w\195\182rld 1337&quot; Empty</span></code></pre>
+<h1 id="internals-the-idea"><a href="#TOC">Internals: the idea</a></h1>
+<ul>
+<li>builders are difference lists of buffer filling functions
+<ul>
+<li>⇒ <em>O(1)</em> append</li>
+</ul></li>
+<li>decompose execution
+<ul>
+<li><em>driver</em>: manages buffer allocation</li>
+<li><em>build steps</em>: fill buffers and signal driver how to continue</li>
+<li>⇒ hoists state of allocation strategy out of inner loop</li>
+<li>⇒ builders become <em>independent</em> of buffer allocation strategy</li>
+</ul></li>
+<li>support direct insertion of strict bytestrings
+<ul>
+<li>⇒ avoid unnecessary copying</li>
+</ul></li>
+</ul>
+<h1 id="internals-the-types"><a href="#TOC">Internals: the types</a></h1>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- a range of a buffer (driver ensures liveness of ptrs)</span>
+<span class="kw">data</span> <span class="dt">BufferRange</span> <span class="fu">=</span>
+    <span class="dt">BufferRange</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">Ptr</span> <span class="dt">Word8</span>)  <span class="co">-- First byte of range</span>
+                <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">Ptr</span> <span class="dt">Word8</span>)  <span class="co">-- First byte /after/ range</span>
+
+<span class="co">-- a buffer filling action</span>
+<span class="kw">type</span> <span class="dt">BuildStep</span> a <span class="fu">=</span> <span class="dt">BufferRange</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">BuildSignal</span> a)
+
+<span class="co">-- a signal to the driver providing the buffers</span>
+<span class="kw">data</span> <span class="dt">BuildSignal</span> a <span class="fu">=</span>
+    <span class="dt">Done</span>        <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">Ptr</span> <span class="dt">Word8</span>)   <span class="co">-- filled up to here</span>
+                                a             <span class="co">-- result (ignore for now)</span>
+
+  <span class="fu">|</span> <span class="dt">BufferFull</span>  <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Int</span>           <span class="co">-- minimal size of next buffer</span>
+                <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">Ptr</span> <span class="dt">Word8</span>)   <span class="co">-- filled up to here</span>
+                                (<span class="dt">BuildStep</span> a) <span class="co">-- continuation</span>
+
+  <span class="fu">|</span> <span class="dt">InsertChunk</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">Ptr</span> <span class="dt">Word8</span>)   <span class="co">-- filled up to here</span>
+                                <span class="dt">S.ByteString</span>  <span class="co">-- bytestring to insert</span>
+                                (<span class="dt">BuildStep</span> a) <span class="co">-- continuation</span>
+
+<span class="co">-- difference list of buffer filling actions for 0(1) append</span>
+<span class="kw">newtype</span> <span class="dt">Builder</span> <span class="fu">=</span> <span class="dt">Builder</span> (forall r<span class="fu">.</span> <span class="dt">BuildStep</span> r <span class="ot">-&gt;</span> <span class="dt">BuildStep</span> r)</code></pre>
+<h1 id="monoid-instance"><a href="#TOC">Monoid instance</a></h1>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">instance</span> <span class="dt">Monoid</span> <span class="dt">Builder</span> <span class="kw">where</span>
+  mempty                            <span class="fu">=</span> <span class="dt">Builder</span> <span class="fu">id</span>
+  mappend (<span class="dt">Builder</span> b1) (<span class="dt">Builder</span> b2) <span class="fu">=</span> <span class="dt">Builder</span> (\k <span class="ot">-&gt;</span> b1 (b2 k))</code></pre>
+<p><code>mappend</code> is <em>fast but not free</em></p>
+<ul>
+<li>best case: completely optimized away</li>
+<li>worst case: one closure allocation and two unknown function calls</li>
+</ul>
+<h1 id="encoding-primitive-values"><a href="#TOC">Encoding primitive values</a></h1>
+<p>Many encodings of primitive values result in sequences of a <em>statically</em> bounded size, e.g., <code>wordHex</code></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">BoundedEncoding</span> a <span class="fu">=</span>
+     <span class="dt">BE</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Int</span>                 <span class="co">-- bound</span>
+        (a <span class="ot">-&gt;</span> <span class="dt">Ptr</span> <span class="dt">Word8</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Ptr</span> <span class="dt">Word8</span>))  <span class="co">-- encoding function</span></code></pre>
+<ul>
+<li><p>composed using combinators (bound remains static)</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">contramapB ::</span> (b <span class="ot">-&gt;</span> a)          <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> a <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> b
+<span class="ot">pairB      ::</span> <span class="dt">BoundedEncoding</span> a <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> b <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> (a, b)
+<span class="ot">ifB        ::</span> (a <span class="ot">-&gt;</span> <span class="dt">Bool</span>) <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> a <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> a <span class="ot">-&gt;</span> <span class="dt">BoundedEncoding</span> a</code></pre></li>
+<li><p>executed by conversion to builders</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">encodeWithB           ::</span> <span class="dt">BoundedEncoding</span> a     <span class="ot">-&gt;</span> (a            <span class="ot">-&gt;</span> <span class="dt">Builder</span>)
+<span class="co">-- variants exploiting spezialized optimizations</span>
+<span class="ot">encodeListWithB       ::</span> <span class="dt">BoundedEncoding</span> a     <span class="ot">-&gt;</span> ([a]          <span class="ot">-&gt;</span> <span class="dt">Builder</span>)
+<span class="ot">encodeByteStringWithB ::</span> <span class="dt">BoundedEncoding</span> <span class="dt">Word8</span> <span class="ot">-&gt;</span> (<span class="dt">S.ByteString</span> <span class="ot">-&gt;</span> <span class="dt">Builder</span>)</code></pre></li>
+<li><p>great wrapper for custom C functions, e.g., <a href="http://hackage.haskell.org/package/double-conversion">V8’s decimal encodings for IEEE floats</a></p></li>
+</ul>
+<h1 id="optimizations-enabled-by-bounded-size-encodings"><a href="#TOC">Optimizations enabled by bounded-size encodings</a></h1>
+<ul>
+<li><p>composing adjacent bounded encodings to save bounds checks (automated using rewriting rules)</p></li>
+<li><p>tricky loop-hoisting</p></li>
+<li><p>coupled indices for input and output arrays, used e.g. in</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">encodeByteStringWithB ::</span> <span class="dt">BoundedEncoding</span> <span class="dt">Word8</span> <span class="ot">-&gt;</span> <span class="dt">S.ByteString</span> <span class="ot">-&gt;</span> <span class="dt">Builder</span>
+
+<span class="co">-- see https://github.com/meiersi/text/commit/b8c8f11923d46b5423ce13a98343865c209e53df</span>
+<span class="co">-- 25% faster for UTF-8 encoding than existing encoder in Text library</span>
+<span class="ot">encodeUtf8Escaped ::</span> <span class="dt">BoundedEncoding</span> <span class="dt">Word8</span> <span class="ot">-&gt;</span> <span class="dt">Text</span> <span class="ot">-&gt;</span> <span class="dt">Builder</span></code></pre>
+<p><strong>Idea:</strong> use temporary end-of-output pointer <code>opeTmp</code> to ensure that the input-pointer <code>ip</code> is valid as long as <code>op &lt; opeTmp</code></p>
+<pre><code>input array:   |ip0   |ip        |ipe
+
+output buffer: |op0   |op        |opeTmp      |ope</code></pre>
+<p><strong>⇒ no <code>ip &lt; ipe</code> check required in inner loop</strong></p></li>
+</ul>
+<h1 id="example-fused-utf-8-encoding-and-html-escaping-of-text-values"><a href="#TOC">Example: fused UTF-8 encoding and HTML escaping of Text values</a></h1>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import</span> <span class="kw">qualified</span> <span class="dt">Data.ByteString.Lazy.Builder.BasicEncoding</span>  <span class="kw">as</span> <span class="dt">E</span>
+<span class="co">-- see library docs for information on fixed-size encodings</span>
+<span class="kw">import</span>           <span class="dt">Data.ByteString.Lazy.Builder.BasicEncoding</span>
+                 ( ifB, fromF, (<span class="fu">&gt;*&lt;</span>), (<span class="fu">&gt;$&lt;</span>) )
+
+<span class="ot">{-# INLINE charUtf8HtmlEscaped #-}</span>
+<span class="ot">charUtf8HtmlEscaped ::</span> <span class="dt">E.BoundedEncoding</span> <span class="dt">Char</span>
+charUtf8HtmlEscaped <span class="fu">=</span>
+    ifB (<span class="fu">&gt;</span>  <span class="ch">&#39;&gt;&#39;</span> ) E.charUtf8 <span class="fu">$</span>  <span class="co">-- &#39;&gt;&#39; is the largest escaped &#39;Char&#39;</span>
+    ifB (<span class="fu">==</span> <span class="ch">&#39;&lt;&#39;</span> ) (fixed4 (<span class="ch">&#39;&amp;&#39;</span>,(<span class="ch">&#39;l&#39;</span>,(<span class="ch">&#39;t&#39;</span>,<span class="ch">&#39;;&#39;</span>)))) <span class="fu">$</span>        <span class="co">-- &amp;lt;</span>
+    ifB (<span class="fu">==</span> <span class="ch">&#39;&gt;&#39;</span> ) (fixed4 (<span class="ch">&#39;&amp;&#39;</span>,(<span class="ch">&#39;g&#39;</span>,(<span class="ch">&#39;t&#39;</span>,<span class="ch">&#39;;&#39;</span>)))) <span class="fu">$</span>        <span class="co">-- &amp;gt;</span>
+    ifB (<span class="fu">==</span> <span class="ch">&#39;&amp;&#39;</span> ) (fixed5 (<span class="ch">&#39;&amp;&#39;</span>,(<span class="ch">&#39;a&#39;</span>,(<span class="ch">&#39;m&#39;</span>,(<span class="ch">&#39;p&#39;</span>,<span class="ch">&#39;;&#39;</span>))))) <span class="fu">$</span>  <span class="co">-- &amp;amp;</span>
+    ifB (<span class="fu">==</span> <span class="ch">&#39;&quot;&#39;</span> ) (fixed5 (<span class="ch">&#39;&amp;&#39;</span>,(<span class="ch">&#39;#&#39;</span>,(<span class="ch">&#39;3&#39;</span>,(<span class="ch">&#39;4&#39;</span>,<span class="ch">&#39;;&#39;</span>))))) <span class="fu">$</span>  <span class="co">-- &amp;#34;</span>
+    (fromF E.char7)             <span class="co">-- fallback for remaining &#39;Char&#39;s</span>
+  <span class="kw">where</span>
+    <span class="ot">{-# INLINE fixed4 #-}</span>
+    fixed4 x <span class="fu">=</span> fromF <span class="fu">$</span> <span class="fu">const</span> x <span class="fu">&gt;$&lt;</span>
+      E.char7 <span class="fu">&gt;*&lt;</span> E.char7 <span class="fu">&gt;*&lt;</span> E.char7 <span class="fu">&gt;*&lt;</span> E.char7
+    <span class="ot">{-# INLINE fixed5 #-}</span>
+    fixed5 x <span class="fu">=</span> fromF <span class="fu">$</span> <span class="fu">const</span> x <span class="fu">&gt;$&lt;</span>
+      E.char7 <span class="fu">&gt;*&lt;</span> E.char7 <span class="fu">&gt;*&lt;</span> E.char7 <span class="fu">&gt;*&lt;</span> E.char7 <span class="fu">&gt;*&lt;</span> E.char7
+
+<span class="ot">textUtf8HtmlEscaped ::</span> <span class="dt">Text</span> <span class="ot">-&gt;</span> <span class="dt">Builder</span>
+textUtf8HtmlEscaped <span class="fu">=</span> encodeUtf8Escaped charUtf8HtmlEscaped</code></pre>
+<h1 id="execution-considerations"><a href="#TOC">Execution: considerations</a></h1>
+<ul>
+<li><p>controlling wasted space due to half-filled buffers</p></li>
+<li><p>using pre-allocated buffers, e.g., the one of a <code>Handle</code></p></li>
+<li><p>interleaving builder execution and IO actions</p></li>
+</ul>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">AllocationStrategy</span> <span class="fu">=</span> <span class="dt">AllocationStrategy</span>
+       (<span class="dt">Maybe</span> (<span class="dt">Buffer</span>, <span class="dt">Int</span>) <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">Buffer</span>) <span class="co">-- buffer allocator</span>
+       <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Int</span>                <span class="co">-- default buffer size</span>
+       (<span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>)               <span class="co">-- trimming predicate</span></code></pre>
+<ul>
+<li><p>returning a result, e.g., the failure to encode λ using an ASCII code</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">newtype</span> <span class="dt">Put</span> a <span class="fu">=</span> <span class="dt">Put</span> {<span class="ot"> unPut ::</span> forall r<span class="fu">.</span> (a <span class="ot">-&gt;</span> <span class="dt">BuildStep</span> r) <span class="ot">-&gt;</span> <span class="dt">BuildStep</span> r }</code></pre>
+<p>Note that <code>Put</code>s are not yet available in the public API</p></li>
+</ul>
+<h1 id="execution-gory-details"><a href="#TOC">Execution: gory details</a></h1>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">ChunkIOStream</span> a <span class="fu">=</span>
+       <span class="dt">Finished</span> <span class="dt">Buffer</span> a                            <span class="co">-- last buffer and result</span>
+     <span class="fu">|</span> <span class="dt">Yield1</span> <span class="dt">S.ByteString</span> (<span class="dt">IO</span> (<span class="dt">ChunkIOStream</span> a))   <span class="co">-- one chunk and continuation</span>
+
+<span class="ot">buildStepToCIOS ::</span> <span class="dt">AllocationStrategy</span> <span class="ot">-&gt;</span> <span class="dt">BuildStep</span> a <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">ChunkIOStream</span> a)
+buildStepToCIOS (<span class="dt">AllocationStrategy</span> nextBuffer bufSize trim) <span class="fu">=</span>
+    \step <span class="ot">-&gt;</span> nextBuffer <span class="kw">Nothing</span> <span class="fu">&gt;&gt;=</span> fill step   <span class="co">-- allocate first buffer and fill</span>
+  <span class="kw">where</span>
+    fill <span class="fu">!</span>step <span class="fu">!</span>buf<span class="fu">@</span>(<span class="dt">Buffer</span> fpbuf br<span class="fu">@</span>(<span class="dt">BufferRange</span> _ pe)) <span class="fu">=</span> <span class="kw">do</span>
+        res <span class="ot">&lt;-</span> fillWithBuildStep step doneH fullH insertChunkH br
+        touchForeignPtr fpbuf  <span class="co">-- keep buffer alive</span>
+        <span class="fu">return</span> res
+      <span class="kw">where</span>
+        pbuf <span class="fu">=</span> unsafeForeignPtrToPtr fpbuf
+        <span class="co">-- return a result</span>
+        doneH op&#39; x <span class="fu">=</span> <span class="fu">return</span> <span class="fu">$</span> <span class="dt">Finished</span> (<span class="dt">Buffer</span> fpbuf (<span class="dt">BufferRange</span> op&#39; pe)) x
+        <span class="co">-- handle a full buffer</span>
+        fullH op&#39; minSize nextStep <span class="fu">=</span>
+          <span class="fu">|</span> trim chunkSize size <span class="fu">=</span> <span class="kw">do</span>
+              bs <span class="ot">&lt;-</span> S.create chunkSize <span class="fu">$</span> \pbuf&#39; <span class="ot">-&gt;</span> copyBytes pbuf&#39; pbuf chunkSize
+              <span class="fu">return</span> <span class="fu">$</span> <span class="dt">Yield1</span> bs k
+          <span class="fu">|</span> <span class="fu">otherwise</span>           <span class="fu">=</span> <span class="fu">return</span> <span class="fu">$</span> <span class="dt">Yield1</span> (<span class="dt">S.PS</span> fpbuf <span class="dv">0</span> chunkSize) k
+          <span class="kw">where</span>
+            k <span class="fu">=</span> nextBuffer (<span class="kw">Just</span> (buf, <span class="fu">max</span> minSize bufSize)) <span class="fu">&gt;&gt;=</span> fill nextStep
+            chunkSize <span class="fu">=</span> op&#39; <span class="ot">`minusPtr`</span> pbuf
+            size      <span class="fu">=</span> pe  <span class="ot">`minusPtr`</span> pbuf
+        <span class="co">-- handle a direct chunk insertion</span>
+        insertChunkH op&#39; bs nextStep <span class="fu">=</span> <span class="fu">....</span></code></pre>
+<h1 id="comparison-to-the-binary-builder"><a href="#TOC">Comparison to the binary builder</a></h1>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- from binary-0.5.0.2</span>
+<span class="kw">data</span> <span class="dt">Buffer</span> <span class="fu">=</span> <span class="dt">Buffer</span> <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span>(<span class="dt">ForeignPtr</span> <span class="dt">Word8</span>)
+                     <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Int</span>                <span class="co">-- offset</span>
+                     <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Int</span>                <span class="co">-- used bytes</span>
+                     <span class="ot">{-# UNPACK #-}</span> <span class="fu">!</span><span class="dt">Int</span>                <span class="co">-- length left</span>
+
+<span class="kw">newtype</span> <span class="dt">Builder</span> <span class="fu">=</span> <span class="dt">Builder</span> {
+<span class="ot">        runBuilder ::</span> (<span class="dt">Buffer</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">L.ByteString</span>)
+                   <span class="ot">-&gt;</span> (<span class="dt">Buffer</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> <span class="dt">L.ByteString</span>)
+    }</code></pre>
+<ul>
+<li><code>binary</code> builder code uses less recursion ⇒ easier to optimize for GHC</li>
+<li>fixed buffer allocation scheme</li>
+<li>more parameters to copy when calling the continuation</li>
+<li>no support for bounded-size encodings yet - easy to add</li>
+</ul>
+<h1 id="conclusions"><a href="#TOC">Conclusions</a></h1>
+<ul>
+<li>use bytestring builders to construct bytestrings from small pieces
+<ul>
+<li>yields good performance by default</li>
+<li>for very high performance: think about execution, optimize inner loops, avoid redundant copying/intermediate datastructures</li>
+</ul></li>
+<li>long-term goal: every library that constructs bytestrings exposes conversions to bytestring builders
+<ul>
+<li>no unnecessary chunk boundaries</li>
+<li>precise control over buffer allocation</li>
+</ul></li>
+</ul>
+<p>In general: provide and use builder’s to construct packed datastructures</p>
+</body>
+</html>
